@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>dev.nocloud.ai</id>
+    <name>No Cloud AI</name>
+    <vendor url="https://github.com/">no-cloud-ai</vendor>
+
+    <description><![CDATA[
+        <p>Local-first AI for JetBrains IDEs.</p>
+        <p>Connects to <b>Ollama</b> and <b>llama.cpp</b> servers running on your own machine.
+        Nothing is sent to the cloud, there is no telemetry, and no account is required.</p>
+        <ul>
+            <li><b>Chat</b> - talk to your local model about the code in your project.</li>
+            <li><b>Agent</b> - the model can read, search and edit files, run shell commands and
+                start run configurations.</li>
+            <li><b>Inline completion</b> - ghost-text suggestions powered by your local model.</li>
+        </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+    <depends optional="true" config-file="plugin-javascript.xml">JavaScript</depends>
+
+    <resource-bundle>messages.NoCloudAi</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationConfigurable
+            id="settings.noCloudAi"
+            parentId="tools"
+            displayName="No Cloud AI"
+            instance="dev.nocloud.ai.settings.LocalAiConfigurable"/>
+
+        <toolWindow
+            id="No Cloud AI"
+            icon="dev.nocloud.ai.toolwindow.NoCloudAiIcons.ToolWindow"
+            anchor="right"
+            factoryClass="dev.nocloud.ai.toolwindow.NoCloudAiToolWindowFactory"/>
+
+        <inline.completion.provider
+            id="NoCloudAiInlineCompletion"
+            implementation="dev.nocloud.ai.completion.LocalInlineCompletionProvider"/>
+
+        <notificationGroup
+            id="NoCloudAi.NotificationGroup"
+            displayType="BALLOON"
+            bundle="messages.NoCloudAi"
+            key="notification.group.name"/>
+    </extensions>
+</idea-plugin>
