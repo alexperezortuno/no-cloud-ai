@@ -1,13 +1,11 @@
 package dev.nocloud.ai.chat
 
 import com.intellij.openapi.util.IconLoader
-import com.intellij.openapi.actionSystem.ActionToolbar
-import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.JBColor
@@ -21,11 +19,6 @@ import com.intellij.util.ui.UIUtil
 import dev.nocloud.ai.core.ChatMessage
 import dev.nocloud.ai.core.ToolCall
 import dev.nocloud.ai.util.Notifications
-import java.awt.BorderLayout
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
-import javax.swing.DefaultListModel
-import javax.swing.JPanel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,15 +26,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.awt.*
 import java.awt.event.ActionEvent
-import java.awt.event.ActionListener
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
 import javax.swing.*
 import javax.swing.border.CompoundBorder
 import javax.swing.border.EmptyBorder
 import javax.swing.event.HyperlinkEvent
-import javax.swing.text.html.HTMLDocument
 import javax.swing.text.html.HTMLEditorKit
 
 /**
@@ -113,12 +106,20 @@ class ChatSurface(
         font = UIUtil.getLabelFont().deriveFont(11f)
     }
 
+    private val attachments = ChatAttachments(project)
+    private val attachmentPanel = JPanel().apply {
+        layout = FlowLayout(FlowLayout.LEFT, 6, 0)
+        isOpaque = false
+        isVisible = false
+    }
+
     private val pendingText = StringBuilder()
     private val pendingToolCalls = mutableListOf<Pair<ToolCall, String>>()
     private var activeAssistantPanel: AssistantPanel? = null
     private var running = false
     private var mentionController: FileMentionController? = null
     private var emptyState: JComponent? = null
+    private var attachPopup: JBPopup? = null
 
     private val flushTimer = Timer(30) { flushPending() }
 
@@ -143,6 +144,7 @@ class ChatSurface(
         val inputPanel = JPanel(BorderLayout(0, 8)).apply {
             border = JBUI.Borders.empty(0, 0, 8, 0)
             add(inputContainer, BorderLayout.CENTER)
+            add(attachmentPanel, BorderLayout.SOUTH)
         }
 
         val messagePanel = JPanel(BorderLayout()).apply {
@@ -226,9 +228,12 @@ class ChatSurface(
     private fun submit() {
         if (running) return
         val text = inputArea.text.trim()
-        if (text.isEmpty()) return
+        val attached = attachments.snapshot()
+        if (text.isEmpty() && attached.isEmpty()) return
 
         inputArea.text = ""
+        attachments.clear()
+        renderAttachments()
         running = true
         sendButton.isEnabled = false
         statusLabel.text = "Thinking..."
@@ -237,9 +242,14 @@ class ChatSurface(
         // appended to the bubble of an earlier one.
         activeAssistantPanel = null
 
-        addUserMessage(text)
+        addUserMessage(text, attached)
 
         scope.launch {
+            // The prompt carries the content of every attachment, so the model can answer
+            // about the files instead of only seeing their names. Reading them happens
+            // here, off the UI thread.
+            val prompt = buildPrompt(text, attached)
+
             val answer = StringBuilder()
             val sink = object : ResponseSink {
                 override fun appendText(delta: String) {
@@ -262,7 +272,7 @@ class ChatSurface(
             }
 
             try {
-                val produced = handler.respond(text, history.toList(), sink)
+                val produced = handler.respond(prompt, history.toList(), sink)
                 history += produced
             } catch (e: Exception) {
                 sink.fail(e.message ?: e::class.java.simpleName)
@@ -275,6 +285,13 @@ class ChatSurface(
                 }
             }
         }
+    }
+
+    /** Combines the typed text with the content of the attached files. */
+    private fun buildPrompt(text: String, files: List<VirtualFile>): String {
+        val context = attachments.render(files)
+        if (context.isEmpty()) return text
+        return if (text.isEmpty()) context else "$text\n\n$context"
     }
 
     /**
@@ -292,6 +309,10 @@ class ChatSurface(
     /**
      * HTML text pane that reports the size of its content at the width it is
      * allowed to use, so bubbles can shrink to the height of the wrapped text.
+     *
+     * The minimum width is dropped on purpose. Swing derives it from the longest
+     * unbreakable run of text, and a single long code line would then make the
+     * bubble wider than the panel, which clips the message instead of wrapping it.
      */
     private inner class ChatTextPane : JTextPane() {
         override fun getPreferredSize(): Dimension {
@@ -302,6 +323,11 @@ class ChatSurface(
             } else {
                 preferred
             }
+        }
+
+        override fun getMinimumSize(): Dimension {
+            val minimum = super.getMinimumSize()
+            return Dimension(0, minimum.height)
         }
     }
 
@@ -372,9 +398,9 @@ class ChatSurface(
         scrollPane.verticalScrollBar.value = scrollPane.verticalScrollBar.maximum
     }
 
-    private fun addUserMessage(text: String) {
+    private fun addUserMessage(text: String, attached: List<VirtualFile>) {
         removeEmptyState()
-        val bubble = UserMessageBubble(text)
+        val bubble = UserMessageBubble(text, attached)
         messageList.add(bubble)
         messageList.revalidate()
         messageList.repaint()
@@ -382,6 +408,11 @@ class ChatSurface(
         scrollPane.verticalScrollBar.value = scrollPane.verticalScrollBar.maximum
     }
 
+    /**
+     * Shows the files currently open in the IDE.
+     *
+     * Only the file name is listed; the full path stays available as a tooltip.
+     */
     private fun showAttachMenu() {
         val openFiles = FileEditorManager.getInstance(project).openFiles
         if (openFiles.isEmpty()) {
@@ -393,8 +424,9 @@ class ChatSurface(
         openFiles.forEach { listModel.addElement(it) }
 
         val list = JBList(listModel).apply {
-            selectionMode = javax.swing.ListSelectionModel.SINGLE_SELECTION
+            selectionMode = ListSelectionModel.SINGLE_SELECTION
             visibleRowCount = 12
+            cellRenderer = FileNameRenderer()
         }
 
         list.addMouseListener(
@@ -402,8 +434,8 @@ class ChatSurface(
                 override fun mouseClicked(e: MouseEvent) {
                     if (e.clickCount == 1) {
                         val selected = list.selectedValue ?: return
-                        insertFileMention(selected)
-                        hidePopup()
+                        attachFile(selected)
+                        closeAttachPopup()
                     }
                 }
             },
@@ -411,45 +443,87 @@ class ChatSurface(
 
         val panel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.customLine(JBColor.border())
-            add(com.intellij.ui.components.JBScrollPane(list), BorderLayout.CENTER)
+            add(JBScrollPane(list), BorderLayout.CENTER)
         }
 
-        val popup = JBPopupFactory.getInstance()
+        closeAttachPopup()
+        attachPopup = JBPopupFactory.getInstance()
             .createComponentPopupBuilder(panel, list)
             .setRequestFocus(false)
             .setCancelOnClickOutside(true)
             .setResizable(false)
             .createPopup()
-
-        popup.showUnderneathOf(attachButton)
-        attachButton.putClientProperty("attachPopup", popup)
+        attachPopup?.showUnderneathOf(attachButton)
     }
 
-    private var attachPopup: com.intellij.openapi.ui.popup.JBPopup? = null
+    /** Adds [file] to the pending attachments and refreshes the attachment chips. */
+    private fun attachFile(file: VirtualFile) {
+        if (!attachments.add(file)) {
+            Notifications.info(project, "${file.name} is already attached")
+            return
+        }
+        renderAttachments()
+    }
 
-    private fun hidePopup() {
+    private fun closeAttachPopup() {
         attachPopup?.cancel()
         attachPopup = null
     }
 
-    private fun insertFileMention(file: VirtualFile) {
-        val relativePath = getRelativePath(file)
-        val mention = "@$relativePath "
-        val text = inputArea.text
-        val caret = inputArea.caretPosition.coerceAtLeast(0)
-        val updated = text.substring(0, caret) + mention + text.substring(caret)
-        inputArea.text = updated
-        inputArea.caretPosition = caret + mention.length
-        inputArea.requestFocus()
+    /** Rebuilds the row of chips that lists the pending attachments. */
+    private fun renderAttachments() {
+        attachmentPanel.removeAll()
+        for (file in attachments.snapshot()) {
+            attachmentPanel.add(attachmentChip(file))
+        }
+        attachmentPanel.isVisible = !attachments.isEmpty
+        attachmentPanel.revalidate()
+        attachmentPanel.repaint()
     }
 
-    private fun getRelativePath(file: VirtualFile): String {
-        val basePath = project.basePath ?: return file.name
-        val filePath = file.path
-        return if (filePath.startsWith(basePath)) {
-            filePath.substring(basePath.length + 1)
-        } else {
-            file.name
+    /** One chip: the file name with a button that removes the attachment. */
+    private fun attachmentChip(file: VirtualFile): JComponent {
+        val remove = JButton("×").apply {
+            toolTipText = "Remove attachment"
+            isFocusable = false
+            isBorderPainted = false
+            isContentAreaFilled = false
+            isFocusPainted = false
+            margin = Insets(0, 2, 0, 0)
+            foreground = JBColor.GRAY
+            font = UIUtil.getLabelFont().deriveFont(12f)
+            addActionListener {
+                attachments.remove(file)
+                renderAttachments()
+            }
+        }
+        val chip = JPanel(BorderLayout(4, 0)).apply {
+            border = CompoundBorder(
+                JBUI.Borders.customLine(JBColor.border()),
+                EmptyBorder(2, 8, 2, 6),
+            )
+            add(JBLabel(file.name), BorderLayout.CENTER)
+            add(remove, BorderLayout.EAST)
+        }
+        chip.toolTipText = attachments.pathOf(file)
+        return chip
+    }
+
+    /** Renders only the file name, keeping the full path in the tooltip. */
+    private inner class FileNameRenderer : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?,
+            value: Any?,
+            index: Int,
+            isSelected: Boolean,
+            cellHasFocus: Boolean,
+        ): java.awt.Component {
+            val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+            if (value is VirtualFile) {
+                text = value.name
+                toolTipText = value.path
+            }
+            return component
         }
     }
 
@@ -501,7 +575,7 @@ class ChatSurface(
     }
 
     /** User message bubble - right aligned with distinct color */
-    private inner class UserMessageBubble(text: String) : ShrinkToFitPanel(BorderLayout()) {
+    private inner class UserMessageBubble(text: String, attached: List<VirtualFile>) : ShrinkToFitPanel(BorderLayout()) {
         private val messagePane = createStyledTextPane()
 
         init {
@@ -510,7 +584,15 @@ class ChatSurface(
 
             messagePane.text = "<html><body>${escapeHtml(text).replace("\n", "<br/>")}</body></html>"
 
-            val bubble = BubblePanel(messagePane, true)
+            val content = JPanel(BorderLayout(0, 4)).apply {
+                isOpaque = false
+                add(messagePane, BorderLayout.CENTER)
+                if (attached.isNotEmpty()) {
+                    add(attachmentLabel(attached), BorderLayout.SOUTH)
+                }
+            }
+
+            val bubble = BubblePanel(content, true)
 
             val wrapper = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
@@ -521,6 +603,17 @@ class ChatSurface(
 
             add(wrapper, BorderLayout.CENTER)
             fitContent()
+        }
+
+        /** Lists the files that travelled with this message. */
+        private fun attachmentLabel(attached: List<VirtualFile>): JBLabel {
+            val names = attached.joinToString(", ") { it.name }
+            return JBLabel("Attached: $names").apply {
+                foreground = JBColor.GRAY
+                font = UIUtil.getLabelFont().deriveFont(11f)
+                border = JBUI.Borders.empty(2, 0)
+                toolTipText = attached.joinToString("\n") { attachments.pathOf(it) }
+            }
         }
 
         /** Re-wraps the text at the current width and resizes the bubble to match. */
@@ -571,11 +664,26 @@ class ChatSurface(
 
             if (content is JBLabel) {
                 content.foreground = textColor
-            } else if (content is JTextPane) {
-                content.foreground = textColor
-                content.background = bubbleColor
-                content.caretColor = textColor
+            } else {
+                // The content may be a container around the text pane, for example when
+                // a message carries attachments.
+                findTextPane(content)?.let { pane ->
+                    pane.foreground = textColor
+                    pane.background = bubbleColor
+                    pane.caretColor = textColor
+                }
             }
+        }
+
+        /** First text pane inside [component], or null when there is none. */
+        private fun findTextPane(component: JComponent): JTextPane? {
+            if (component is JTextPane) return component
+            for (child in component.components) {
+                if (child is JComponent) {
+                    findTextPane(child)?.let { return it }
+                }
+            }
+            return null
         }
 
         /** The bubble is exactly as wide as its content, so it never spans the whole view. */
@@ -639,12 +747,12 @@ class ChatSurface(
                     color: ${JBColor(0xD4D4D4, 0xD4D4D4).toHexString()};
                     padding: 12px;
                     border-radius: 8px;
-                    overflow-x: auto;
                     margin: 8px 0;
                     font-family: 'Monospaced', 'Consolas', 'Menlo', monospace;
                     font-size: 12px;
                     line-height: 1.4;
                     border: 1px solid ${JBColor(0x3C3C3C, 0x4A4A4A).toHexString()};
+                    white-space: pre-wrap;
                 }
                 code {
                     background-color: ${JBColor(0xF0F0F0, 0x3A3A3A).toHexString()};
@@ -717,6 +825,7 @@ class ChatSurface(
         flushTimer.stop()
         scope.cancel()
         mentionController?.dispose()
+        closeAttachPopup()
     }
 
     // Extension to convert JBColor to hex string for CSS
