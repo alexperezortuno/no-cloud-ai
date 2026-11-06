@@ -15,6 +15,7 @@ import dev.nocloud.ai.provider.ProviderFactory
 import dev.nocloud.ai.util.Notifications
 import kotlinx.coroutines.runBlocking
 import java.awt.FlowLayout
+import java.awt.GridLayout
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -22,12 +23,12 @@ import javax.swing.JPanel
 /** Settings page for the local backends. */
 class LocalAiConfigurable : Configurable {
 
-    private val providerCombo = ComboBox(ProviderKind.entries.toTypedArray())
+    private val ollamaActiveBox = JBCheckBox("Ollama")
+    private val llamaActiveBox = JBCheckBox("llama.cpp")
+
     private val ollamaUrlField = JBTextField(28)
-    private val ollamaModelCombo = ComboBox<String>()
     private val ollamaKeyField = JBPasswordField()
     private val llamaUrlField = JBTextField(28)
-    private val llamaModelCombo = ComboBox<String>()
     private val llamaKeyField = JBPasswordField()
 
     private val temperatureField = JBTextField(8)
@@ -39,24 +40,30 @@ class LocalAiConfigurable : Configurable {
     private val agentEnabledBox = JBCheckBox("Enable the agent and its tools")
     private val inlineCompletionBox = JBCheckBox("Enable inline completion (ghost text)")
     private val fimTemplateCombo = ComboBox(FimTemplate.entries.toTypedArray())
+    private val requireToolConfirmationBox = JBCheckBox("Require confirmation before executing tools that modify files or run commands")
 
     override fun getDisplayName(): String = "No Cloud AI"
 
     override fun createComponent(): JComponent {
-        val refreshOllama = JButton("Refresh models").apply { addActionListener { refreshModels(ProviderKind.OLLAMA) } }
-        val refreshLlama = JButton("Refresh models").apply { addActionListener { refreshModels(ProviderKind.LLAMA_CPP) } }
-        val testButton = JButton("Test connection").apply { addActionListener { testConnection() } }
+        val testOllama = JButton("Test connection").apply { addActionListener { testConnection(ProviderKind.OLLAMA) } }
+        val testLlama = JButton("Test connection").apply { addActionListener { testConnection(ProviderKind.LLAMA_CPP) } }
+
+        val activeProvidersPanel = JPanel(GridLayout(1, 2, 8, 0)).apply {
+            add(ollamaActiveBox)
+            add(llamaActiveBox)
+            border = JBUI.Borders.emptyLeft(8)
+        }
 
         val panel = FormBuilder.createFormBuilder()
-            .addLabeledComponent("Backend:", providerCombo)
+            .addLabeledComponent("Active providers:", activeProvidersPanel)
             .addSeparator()
             .addLabeledComponent("Ollama URL:", ollamaUrlField)
-            .addLabeledComponent("Ollama model:", withButton(ollamaModelCombo, refreshOllama))
             .addLabeledComponent("Ollama API key:", ollamaKeyField)
+            .addLabeledComponent("", withButton(JPanel(), testOllama))
             .addSeparator()
             .addLabeledComponent("llama.cpp URL:", llamaUrlField)
-            .addLabeledComponent("llama.cpp model:", withButton(llamaModelCombo, refreshLlama))
             .addLabeledComponent("llama.cpp API key:", llamaKeyField)
+            .addLabeledComponent("", withButton(JPanel(), testLlama))
             .addSeparator()
             .addLabeledComponent("Temperature:", temperatureField)
             .addLabeledComponent("Max tokens:", maxTokensField)
@@ -66,9 +73,8 @@ class LocalAiConfigurable : Configurable {
             .addComponent(agentEnabledBox)
             .addLabeledComponent("Max tool iterations:", agentIterationsField)
             .addComponent(inlineCompletionBox)
+            .addComponent(requireToolConfirmationBox)
             .addLabeledComponent("FIM template:", fimTemplateCombo)
-            .addSeparator()
-            .addComponent(testButton)
             .addComponentFillVertically(JPanel(), 0)
             .panel
             .apply { border = JBUI.Borders.empty(8) }
@@ -80,20 +86,22 @@ class LocalAiConfigurable : Configurable {
     /** `JPasswordField.getText()` is deprecated; read the password directly instead. */
     private fun passwordText(field: javax.swing.JPasswordField): String = String(field.password)
 
-    private fun withButton(combo: ComboBox<String>, button: JButton): JPanel =
+    private fun withButton(panel: JPanel, button: JButton): JPanel =
         JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-            add(combo)
+            add(panel)
             add(button)
         }
 
     override fun isModified(): Boolean {
         val state = LocalAiSettings.instance().state
-        return providerCombo.selectedItem != state.provider ||
+        val activeProviders = mutableSetOf<ProviderKind>()
+        if (ollamaActiveBox.isSelected) activeProviders.add(ProviderKind.OLLAMA)
+        if (llamaActiveBox.isSelected) activeProviders.add(ProviderKind.LLAMA_CPP)
+
+        return activeProviders != state.activeProviders ||
             ollamaUrlField.text != state.ollamaBaseUrl ||
-            selectedModel(ProviderKind.OLLAMA) != state.ollamaModel ||
             passwordText(ollamaKeyField) != (Credentials.get(Credentials.KEY_OLLAMA) ?: "") ||
             llamaUrlField.text != state.llamaBaseUrl ||
-            selectedModel(ProviderKind.LLAMA_CPP) != state.llamaModel ||
             passwordText(llamaKeyField) != (Credentials.get(Credentials.KEY_LLAMA_CPP) ?: "") ||
             temperatureField.text != state.temperature.toString() ||
             maxTokensField.text != state.maxTokens.toString() ||
@@ -102,16 +110,21 @@ class LocalAiConfigurable : Configurable {
             disableThinkingBox.isSelected != state.disableThinking ||
             agentEnabledBox.isSelected != state.agentEnabled ||
             inlineCompletionBox.isSelected != state.inlineCompletionEnabled ||
+            requireToolConfirmationBox.isSelected != state.requireToolConfirmation ||
             fimTemplateCombo.selectedItem != state.fimTemplate
     }
 
     override fun apply() {
         val state = LocalAiSettings.instance().state
-        state.provider = providerCombo.selectedItem as? ProviderKind ?: state.provider
+        state.activeProviders.clear()
+        if (ollamaActiveBox.isSelected) state.activeProviders.add(ProviderKind.OLLAMA)
+        if (llamaActiveBox.isSelected) state.activeProviders.add(ProviderKind.LLAMA_CPP)
+
+        // Backward compatibility: keep the deprecated single provider field in sync
+        state.provider = state.activeProviders.firstOrNull() ?: ProviderKind.OLLAMA
+
         state.ollamaBaseUrl = ollamaUrlField.text.trim()
-        state.ollamaModel = selectedModel(ProviderKind.OLLAMA)
         state.llamaBaseUrl = llamaUrlField.text.trim()
-        state.llamaModel = selectedModel(ProviderKind.LLAMA_CPP)
         state.temperature = temperatureField.text.trim().toDoubleOrNull() ?: 0.7
         state.maxTokens = maxTokensField.text.trim().toIntOrNull() ?: 4096
         state.contextSize = contextSizeField.text.trim().toIntOrNull() ?: 8192
@@ -119,6 +132,7 @@ class LocalAiConfigurable : Configurable {
         state.disableThinking = disableThinkingBox.isSelected
         state.agentEnabled = agentEnabledBox.isSelected
         state.inlineCompletionEnabled = inlineCompletionBox.isSelected
+        state.requireToolConfirmation = requireToolConfirmationBox.isSelected
         state.fimTemplate = fimTemplateCombo.selectedItem as? FimTemplate ?: state.fimTemplate
 
         Credentials.set(Credentials.KEY_OLLAMA, passwordText(ollamaKeyField))
@@ -127,7 +141,9 @@ class LocalAiConfigurable : Configurable {
 
     override fun reset() {
         val state = LocalAiSettings.instance().state
-        providerCombo.selectedItem = state.provider
+        ollamaActiveBox.isSelected = ProviderKind.OLLAMA in state.activeProviders
+        llamaActiveBox.isSelected = ProviderKind.LLAMA_CPP in state.activeProviders
+
         ollamaUrlField.text = state.ollamaBaseUrl
         llamaUrlField.text = state.llamaBaseUrl
         temperatureField.text = state.temperature.toString()
@@ -137,26 +153,10 @@ class LocalAiConfigurable : Configurable {
         disableThinkingBox.isSelected = state.disableThinking
         agentEnabledBox.isSelected = state.agentEnabled
         inlineCompletionBox.isSelected = state.inlineCompletionEnabled
+        requireToolConfirmationBox.isSelected = state.requireToolConfirmation
         fimTemplateCombo.selectedItem = state.fimTemplate
         ollamaKeyField.text = Credentials.get(Credentials.KEY_OLLAMA) ?: ""
         llamaKeyField.text = Credentials.get(Credentials.KEY_LLAMA_CPP) ?: ""
-
-        setModels(ProviderKind.OLLAMA, state.ollamaModel)
-        setModels(ProviderKind.LLAMA_CPP, state.llamaModel)
-    }
-
-    private fun selectedModel(kind: ProviderKind): String = when (kind) {
-        ProviderKind.OLLAMA -> ollamaModelCombo.selectedItem as? String ?: ""
-        ProviderKind.LLAMA_CPP -> llamaModelCombo.selectedItem as? String ?: ""
-    }
-
-    private fun setModels(kind: ProviderKind, model: String) {
-        val combo = when (kind) {
-            ProviderKind.OLLAMA -> ollamaModelCombo
-            ProviderKind.LLAMA_CPP -> llamaModelCombo
-        }
-        combo.removeAllItems()
-        if (model.isNotBlank()) combo.addItem(model)
     }
 
     /** Builds a configuration from what is currently shown in the form. */
@@ -168,7 +168,10 @@ class LocalAiConfigurable : Configurable {
                 ProviderKind.OLLAMA -> ollamaUrlField.text.trim()
                 ProviderKind.LLAMA_CPP -> llamaUrlField.text.trim()
             },
-            model = selectedModel(kind),
+            model = when (kind) {
+                ProviderKind.OLLAMA -> state.ollamaModel
+                ProviderKind.LLAMA_CPP -> state.llamaModel
+            },
             apiKey = Credentials.get(
                 when (kind) {
                     ProviderKind.OLLAMA -> Credentials.KEY_OLLAMA
@@ -182,47 +185,19 @@ class LocalAiConfigurable : Configurable {
         )
     }
 
-    private fun refreshModels(kind: ProviderKind) {
+    private fun testConnection(kind: ProviderKind) {
         val config = configFor(kind)
         if (config.baseUrl.isBlank()) {
-            Notifications.warning(null, "Set the server URL first.")
+            Notifications.warning(null, "Set the server URL for ${kind.displayName} first.")
             return
         }
         ApplicationManager.getApplication().executeOnPooledThread {
             val result = runCatching { runBlocking { ProviderFactory.create(kind).listModels(config) } }
             ApplicationManager.getApplication().invokeLater {
                 result.onSuccess { models ->
-                    val combo = when (kind) {
-                        ProviderKind.OLLAMA -> ollamaModelCombo
-                        ProviderKind.LLAMA_CPP -> llamaModelCombo
-                    }
-                    val current = combo.selectedItem as? String
-                    combo.removeAllItems()
-                    models.forEach { combo.addItem(it.id) }
-                    if (current != null && models.none { it.id == current }) {
-                        combo.addItem(current)
-                    }
-                    if (combo.itemCount > 0 && combo.selectedIndex < 0) {
-                        combo.selectedIndex = 0
-                    }
-                    Notifications.info(null, "Found ${models.size} model(s) on ${config.baseUrl}.")
+                    Notifications.info(null, "Connected to ${config.baseUrl} (${kind.displayName}). ${models.size} model(s) available.")
                 }.onFailure { error ->
-                    Notifications.error(null, "Cannot reach ${config.baseUrl}: ${error.message}")
-                }
-            }
-        }
-    }
-
-    private fun testConnection() {
-        val kind = providerCombo.selectedItem as? ProviderKind ?: ProviderKind.OLLAMA
-        val config = configFor(kind)
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val result = runCatching { runBlocking { ProviderFactory.create(kind).listModels(config) } }
-            ApplicationManager.getApplication().invokeLater {
-                result.onSuccess { models ->
-                    Notifications.info(null, "Connected to ${config.baseUrl}. ${models.size} model(s) available.")
-                }.onFailure { error ->
-                    Notifications.error(null, "Cannot reach ${config.baseUrl}: ${error.message}")
+                    Notifications.error(null, "Cannot reach ${config.baseUrl} (${kind.displayName}): ${error.message}")
                 }
             }
         }

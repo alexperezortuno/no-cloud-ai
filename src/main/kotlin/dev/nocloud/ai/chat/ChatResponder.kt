@@ -14,8 +14,11 @@ class ChatResponder : ConversationHandler {
         history: List<ChatMessage>,
         sink: ResponseSink,
     ): List<ChatMessage> {
-        val config = ProviderConfigFactory.current()
-        val provider = ProviderFactory.create(config.kind)
+        val configs = ProviderConfigFactory.active()
+        if (configs.isEmpty()) {
+            sink.fail("No active providers configured. Enable at least one provider in settings.")
+            return emptyList()
+        }
 
         val messages = buildList {
             addAll(history)
@@ -28,12 +31,24 @@ class ChatResponder : ConversationHandler {
             systemPrompt = AgentPrompts.chatPrompt(),
         )
 
-        val answer = StringBuilder()
-        provider.complete(config, request) { delta ->
-            answer.append(delta)
-            sink.appendText(delta)
+        var lastError: Throwable? = null
+        for (config in configs) {
+            val provider = ProviderFactory.create(config.kind)
+            val answer = StringBuilder()
+            try {
+                provider.complete(config, request) { delta ->
+                    answer.append(delta)
+                    sink.appendText(delta)
+                }
+                sink.finish()
+                return listOf(ChatMessage.assistant(answer.toString()))
+            } catch (e: Exception) {
+                lastError = e
+                sink.appendText("\n[${config.kind.displayName} failed: ${e.message}, trying next provider...]")
+            }
         }
-        sink.finish()
-        return listOf(ChatMessage.assistant(answer.toString()))
+
+        sink.fail("All active providers failed. Last error: ${lastError?.message}")
+        return emptyList()
     }
 }

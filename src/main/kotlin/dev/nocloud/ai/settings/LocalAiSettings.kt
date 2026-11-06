@@ -33,6 +33,10 @@ class LocalAiSettings : PersistentStateComponent<LocalAiSettingsState> {
 }
 
 class LocalAiSettingsState {
+    /** Which providers are active and should be used for requests. */
+    var activeProviders: MutableSet<ProviderKind> = mutableSetOf(ProviderKind.OLLAMA)
+
+    @Deprecated("Use activeProviders instead", ReplaceWith("activeProviders"))
     var provider: ProviderKind = ProviderKind.OLLAMA
 
     var ollamaBaseUrl: String = "http://localhost:11434"
@@ -55,6 +59,9 @@ class LocalAiSettingsState {
     var fimTemplate: FimTemplate = FimTemplate.QWEN
 
     var debugHttp: Boolean = false
+
+    /** Require confirmation before executing tools that modify files or run commands. */
+    var requireToolConfirmation: Boolean = true
 }
 
 /**
@@ -65,7 +72,14 @@ class LocalAiSettingsState {
  */
 object ProviderConfigFactory {
 
-    fun current(): ProviderConfig = forKind(LocalAiSettings.instance().state.provider)
+    /** Returns configs for all currently active providers. */
+    fun active(): List<ProviderConfig> {
+        val state = LocalAiSettings.instance().state
+        return state.activeProviders.map { forKind(it, state) }
+    }
+
+    /** Returns the config for the first active provider (backward compatibility). */
+    fun current(): ProviderConfig = active().firstOrNull() ?: forKind(ProviderKind.OLLAMA)
 
     fun forKind(
         kind: ProviderKind,

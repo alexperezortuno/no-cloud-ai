@@ -16,23 +16,43 @@ class AgentResponder(private val project: Project) : ConversationHandler {
         history: List<ChatMessage>,
         sink: ResponseSink,
     ): List<ChatMessage> {
-        val config = ProviderConfigFactory.current()
-        val provider = ProviderFactory.create(config.kind)
+        val configs = ProviderConfigFactory.active()
+        if (configs.isEmpty()) {
+            sink.fail("No active providers configured. Enable at least one provider in settings.")
+            return emptyList()
+        }
+
         val tools = ToolRegistry.forProject(project)
 
-        return AgentRunner(provider, config).run(
-            userMessage = userText,
-            history = history,
-            tools = tools,
-            sink = object : AgentSink {
-                override fun onText(delta: String) = sink.appendText(delta)
+        var lastError: Throwable? = null
+        for (config in configs) {
+            val provider = ProviderFactory.create(config.kind)
+            if (!provider.supportsToolCalling) {
+                sink.appendText("\n[${config.kind.displayName} does not support tool calling, trying next provider...]")
+                continue
+            }
+            try {
+                return AgentRunner(provider, config).run(
+                    userMessage = userText,
+                    history = history,
+                    tools = tools,
+                    sink = object : AgentSink {
+                        override fun onText(delta: String) = sink.appendText(delta)
 
-                override fun onToolCall(call: ToolCall, result: String) = sink.appendToolCall(call, result)
+                        override fun onToolCall(call: ToolCall, result: String) = sink.appendToolCall(call, result)
 
-                override fun onError(message: String) = sink.fail(message)
+                        override fun onError(message: String) = sink.fail(message)
 
-                override fun onFinished(finalText: String) = sink.finish()
-            },
-        )
+                        override fun onFinished(finalText: String) = sink.finish()
+                    },
+                )
+            } catch (e: Exception) {
+                lastError = e
+                sink.appendText("\n[${config.kind.displayName} failed: ${e.message}, trying next provider...]")
+            }
+        }
+
+        sink.fail("All active providers failed. Last error: ${lastError?.message}")
+        return emptyList()
     }
 }

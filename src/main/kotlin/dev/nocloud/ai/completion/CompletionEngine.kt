@@ -18,7 +18,12 @@ object CompletionEngine {
     suspend fun suggest(editor: Editor, document: Document): String {
         val settings = LocalAiSettings.instance().state
         if (!settings.inlineCompletionEnabled) return ""
-        if (settings.ollamaModel.isBlank() && settings.llamaModel.isBlank()) return ""
+
+        val configs = ProviderConfigFactory.active()
+        if (configs.isEmpty()) return ""
+
+        val config = configs.first()
+        if (config.model.isBlank()) return ""
 
         val context = ReadAction.computeBlocking<Pair<String, String>, RuntimeException> {
             val caret = editor.caretModel.offset.coerceIn(0, document.textLength)
@@ -26,9 +31,6 @@ object CompletionEngine {
             val suffix = document.getText(TextRange(caret, document.textLength)).take(SUFFIX_CHARS)
             prefix to suffix
         }
-
-        val config = ProviderConfigFactory.current()
-        if (config.model.isBlank()) return ""
 
         val provider = ProviderFactory.create(config.kind)
         val template = settings.fimTemplate
