@@ -266,7 +266,7 @@ class ChatSurface(
 
         val panel = activeAssistantPanel ?: AssistantPanel().also {
             activeAssistantPanel = it
-            messageList.add(it, 0)
+            messageList.add(it)
         }
         if (text.isNotEmpty()) panel.appendText(text)
         toolCalls.forEach { (call, result) -> panel.appendToolCall(call, result) }
@@ -277,7 +277,7 @@ class ChatSurface(
 
     private fun addUserMessage(text: String) {
         val bubble = UserMessageBubble(text)
-        messageList.add(bubble, 0)
+        messageList.add(bubble)
         messageList.revalidate()
         messageList.repaint()
         scrollPane.verticalScrollBar.value = scrollPane.verticalScrollBar.maximum
@@ -394,12 +394,12 @@ class ChatSurface(
     /** Custom panel with rounded corners and bubble styling */
     private inner class BubblePanel(content: JComponent, private val isUser: Boolean) : JPanel(BorderLayout()) {
         private val bubbleColor = if (isUser) {
-            JBColor(0x007AFF, 0x0A84FF)
+            JBColor(0xF0F0F0, 0x2A2A2A)
         } else {
             JBColor.namedColor("Panel.background", JBColor.WHITE)
         }
-        private val textColor = if (isUser) JBColor.WHITE else JBColor.namedColor("textColor", JBColor.BLACK)
-        private val borderColor = if (isUser) bubbleColor else JBColor.namedColor("SeparatorColor", JBColor.GRAY)
+        private val textColor = JBColor.namedColor("textColor", JBColor.BLACK)
+        private val borderColor = JBColor.namedColor("SeparatorColor", JBColor.GRAY)
 
         init {
             isOpaque = false
