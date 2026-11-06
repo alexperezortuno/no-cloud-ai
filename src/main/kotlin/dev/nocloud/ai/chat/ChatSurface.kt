@@ -109,6 +109,7 @@ class ChatSurface(
     private var activeAssistantPanel: AssistantPanel? = null
     private var running = false
     private var mentionController: FileMentionController? = null
+    private var emptyState: JComponent? = null
 
     private val flushTimer = Timer(30) { flushPending() }
 
@@ -163,6 +164,10 @@ class ChatSurface(
 
         FileMentionController(project, inputArea).also { mentionController = it }
 
+        scrollPane.viewport.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) = refitMessages()
+        })
+
         addEmptyState()
 
         flushTimer.start()
@@ -194,7 +199,17 @@ class ChatSurface(
             add(label)
             add(Box.createVerticalGlue())
         }
+        emptyState = wrapper
         messageList.add(wrapper)
+        messageList.revalidate()
+        messageList.repaint()
+    }
+
+    /** Drops the placeholder as soon as the conversation has real content. */
+    private fun removeEmptyState() {
+        val state = emptyState ?: return
+        emptyState = null
+        messageList.remove(state)
         messageList.revalidate()
         messageList.repaint()
     }
@@ -249,6 +264,75 @@ class ChatSurface(
         }
     }
 
+    /**
+     * A message container that hugs its content. Its maximum height is its preferred
+     * height, so the vertical BoxLayout of the message list cannot hand it the
+     * leftover space and stretch the bubble over the whole viewport.
+     */
+    private abstract class ShrinkToFitPanel(layout: LayoutManager) : JPanel(layout) {
+        override fun getMaximumSize(): Dimension {
+            val preferred = preferredSize
+            return Dimension(Int.MAX_VALUE, preferred.height)
+        }
+    }
+
+    /**
+     * HTML text pane that reports the size of its content at the width it is
+     * allowed to use, so bubbles can shrink to the height of the wrapped text.
+     */
+    private inner class ChatTextPane : JTextPane() {
+        override fun getPreferredSize(): Dimension {
+            val preferred = super.getPreferredSize()
+            val maxWidth = availableWidth(this)
+            return if (maxWidth > 0 && preferred.width > maxWidth) {
+                Dimension(maxWidth, preferred.height)
+            } else {
+                preferred
+            }
+        }
+    }
+
+    /** Width the content of [component] may use before it has to wrap. */
+    private fun availableWidth(component: JComponent): Int {
+        val viewport = scrollPane.viewport
+        var width = viewport.extentSize.width
+        if (width <= 0) return 0
+        var current: Component? = component.parent
+        while (current != null) {
+            if (current is JComponent) {
+                width -= current.insets.left + current.insets.right
+            }
+            if (current === viewport) break
+            current = current.parent
+        }
+        return width
+    }
+
+    /**
+     * Lays the text out at the width it may use and refreshes the height of the
+     * bubble that contains it.
+     */
+    private fun fitTextPane(textPane: JTextPane) {
+        val width = availableWidth(textPane) - textPane.insets.left - textPane.insets.right
+        if (width <= 0) return
+        textPane.size = Dimension(width, Short.MAX_VALUE.toInt())
+        textPane.size = Dimension(width, textPane.preferredSize.height)
+        textPane.revalidate()
+        textPane.repaint()
+    }
+
+    /** Re-fits every rendered message, e.g. after the viewport changed its width. */
+    private fun refitMessages() {
+        for (component in messageList.components) {
+            when (component) {
+                is AssistantPanel -> component.fitContent()
+                is UserMessageBubble -> component.fitContent()
+            }
+        }
+        messageList.revalidate()
+        messageList.repaint()
+    }
+
     /** Moves queued deltas onto the UI. Must run on the EDT. */
     private fun flushPending() {
         val text: String
@@ -276,10 +360,12 @@ class ChatSurface(
     }
 
     private fun addUserMessage(text: String) {
+        removeEmptyState()
         val bubble = UserMessageBubble(text)
         messageList.add(bubble)
         messageList.revalidate()
         messageList.repaint()
+        refitMessages()
         scrollPane.verticalScrollBar.value = scrollPane.verticalScrollBar.maximum
     }
 
@@ -295,7 +381,7 @@ class ChatSurface(
     }
 
     /** Renders the assistant side of the conversation with markdown support. */
-    private inner class AssistantPanel : JPanel(BorderLayout()) {
+    private inner class AssistantPanel : ShrinkToFitPanel(BorderLayout()) {
         private val textPane = createStyledTextPane()
         private val toolPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -318,6 +404,7 @@ class ChatSurface(
             markdown.append(delta)
             textPane.text = Markdown.toHtml(markdown.toString())
             textPane.caretPosition = textPane.document.length
+            fitContent()
         }
 
         fun appendToolCall(call: ToolCall, result: String) {
@@ -329,33 +416,28 @@ class ChatSurface(
             toolPanel.add(label)
             toolPanel.revalidate()
             toolPanel.repaint()
+            fitContent()
         }
 
-        private fun escapeHtml(text: String): String = text
-            .replace("&", "&")
-            .replace("<", "<")
-            .replace(">", ">")
+        /** Re-wraps the text at the current width and resizes the bubble to match. */
+        fun fitContent() {
+            fitTextPane(textPane)
+            revalidate()
+            repaint()
+        }
     }
 
     /** User message bubble - right aligned with distinct color */
-    private inner class UserMessageBubble(text: String) : JPanel(BorderLayout()) {
+    private inner class UserMessageBubble(text: String) : ShrinkToFitPanel(BorderLayout()) {
+        private val messagePane = createStyledTextPane()
+
         init {
             isOpaque = false
             border = JBUI.Borders.empty(6, 12)
 
-            val bubbleContent = JPanel().apply {
-                layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                isOpaque = false
-                border = JBUI.Borders.empty(2, 0)
-            }
+            messagePane.text = "<html><body>${escapeHtml(text).replace("\n", "<br/>")}</body></html>"
 
-            val messageLabel = JBLabel("<html>${escapeHtml(text)}</html>").apply {
-                font = UIUtil.getLabelFont().deriveFont(13f)
-                foreground = JBColor.WHITE
-            }
-
-            val bubble = BubblePanel(messageLabel, true)
-            maximumSize = Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE)
+            val bubble = BubblePanel(messagePane, true)
 
             val wrapper = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.X_AXIS)
@@ -365,17 +447,19 @@ class ChatSurface(
             }
 
             add(wrapper, BorderLayout.CENTER)
+            fitContent()
         }
 
-        private fun escapeHtml(text: String): String = text
-            .replace("&", "&")
-            .replace("<", "<")
-            .replace(">", ">")
-            .replace("\n", "<br/>")
+        /** Re-wraps the text at the current width and resizes the bubble to match. */
+        fun fitContent() {
+            fitTextPane(messagePane)
+            revalidate()
+            repaint()
+        }
     }
 
     /** Assistant message bubble - left aligned */
-    private inner class AssistantBubble(content: JComponent) : JPanel(BorderLayout()) {
+    private inner class AssistantBubble(content: JComponent) : ShrinkToFitPanel(BorderLayout()) {
         init {
             isOpaque = false
             border = JBUI.Borders.empty(6, 12)
@@ -392,7 +476,7 @@ class ChatSurface(
     }
 
     /** Custom panel with rounded corners and bubble styling */
-    private inner class BubblePanel(content: JComponent, private val isUser: Boolean) : JPanel(BorderLayout()) {
+    private inner class BubblePanel(content: JComponent, private val isUser: Boolean) : ShrinkToFitPanel(BorderLayout()) {
         private val bubbleColor = if (isUser) {
             JBColor(0xF0F0F0, 0x2A2A2A)
         } else {
@@ -421,6 +505,9 @@ class ChatSurface(
             }
         }
 
+        /** The bubble is exactly as wide as its content, so it never spans the whole view. */
+        override fun getMaximumSize(): Dimension = preferredSize
+
         override fun paintComponent(g: Graphics) {
             val g2 = g as Graphics2D
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -445,7 +532,7 @@ class ChatSurface(
     }
 
     private fun createStyledTextPane(): JTextPane {
-        return JTextPane().apply {
+        return ChatTextPane().apply {
             isEditable = false
             isOpaque = false
             border = JBUI.Borders.empty(2, 0)
@@ -546,6 +633,12 @@ class ChatSurface(
             """.trimIndent())
         }
     }
+
+    /** Escapes the characters that would otherwise be interpreted as HTML markup. */
+    private fun escapeHtml(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
 
     fun dispose() {
         flushTimer.stop()
