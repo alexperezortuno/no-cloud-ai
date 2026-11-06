@@ -36,7 +36,7 @@ object Markdown {
     fun toHtml(markdown: String): String {
         if (markdown.isBlank()) return ""
         return runCatching { renderer.render(parser.parse(markdown)) }.getOrElse {
-            markdown.replace("&", "&").replace("<", "<").replace("\n", "<br/>")
+            markdown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
         }
     }
 }

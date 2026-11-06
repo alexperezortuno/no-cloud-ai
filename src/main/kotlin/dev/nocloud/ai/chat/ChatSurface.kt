@@ -733,6 +733,7 @@ class ChatSurface(
             }
 
             val styleSheet = (editorKit as HTMLEditorKit).styleSheet
+            styleSheet.addRule(ChatCodeStyle.css())
             styleSheet.addRule("""
                 body {
                     font-family: ${UIUtil.getLabelFont().family};
@@ -741,32 +742,6 @@ class ChatSurface(
                     margin: 0;
                     padding: 0;
                     line-height: 1.5;
-                }
-                pre {
-                    background-color: ${JBColor(0x1E1E1E, 0x2D2D2D).toHexString()};
-                    color: ${JBColor(0xD4D4D4, 0xD4D4D4).toHexString()};
-                    padding: 12px;
-                    border-radius: 8px;
-                    margin: 8px 0;
-                    font-family: 'Monospaced', 'Consolas', 'Menlo', monospace;
-                    font-size: 12px;
-                    line-height: 1.4;
-                    border: 1px solid ${JBColor(0x3C3C3C, 0x4A4A4A).toHexString()};
-                    white-space: pre-wrap;
-                }
-                code {
-                    background-color: ${JBColor(0xF0F0F0, 0x3A3A3A).toHexString()};
-                    color: ${JBColor(0xD73A49, 0xF97583).toHexString()};
-                    padding: 2px 6px;
-                    border-radius: 4px;
-                    font-family: 'Monospaced', 'Consolas', 'Menlo', monospace;
-                    font-size: 12px;
-                }
-                pre code {
-                    background-color: transparent;
-                    color: inherit;
-                    padding: 0;
-                    border-radius: 0;
                 }
                 blockquote {
                     border-left: 3px solid ${JBColor.namedColor("SeparatorColor", JBColor.GRAY).toHexString()};
@@ -802,7 +777,7 @@ class ChatSurface(
                 a { color: ${JBColor(0x007AFF, 0x0A84FF).toHexString()}; text-decoration: none; }
                 a:hover { text-decoration: underline; }
                 hr { border: none; border-top: 1px solid ${JBColor.namedColor("SeparatorColor", JBColor.GRAY).toHexString()}; margin: 12px 0; }
-                .hljs { color: #D4D4D4; }
+                .hljs { color: ${ChatCodeStyle.foregroundHex}; }
                 .hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-tag { color: #C586C0; }
                 .hljs-string, .hljs-title, .hljs-section, .hljs-attribute, .hljs-literal, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-addition { color: #CE9178; }
                 .hljs-comment, .hljs-quote, .hljs-deletion, .hljs-meta { color: #6A9955; }
@@ -810,7 +785,7 @@ class ChatSurface(
                 .hljs-variable, .hljs-template-variable, .hljs-params, .hljs-function { color: #9CDCFE; }
                 .hljs-function .hljs-title { color: #DCDCAA; }
                 .hljs-attr, .hljs-property, .hljs-class .hljs-title { color: #4EC9B0; }
-                .hljs-operator, .hljs-punctuation { color: #D4D4D4; }
+                .hljs-operator, .hljs-punctuation { color: ${ChatCodeStyle.foregroundHex}; }
             """.trimIndent())
         }
     }
