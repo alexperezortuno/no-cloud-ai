@@ -224,6 +224,10 @@ class ChatSurface(
         sendButton.isEnabled = false
         statusLabel.text = "Thinking..."
 
+        // Every turn gets its own assistant bubble; the next response must not be
+        // appended to the bubble of an earlier one.
+        activeAssistantPanel = null
+
         addUserMessage(text)
 
         scope.launch {
