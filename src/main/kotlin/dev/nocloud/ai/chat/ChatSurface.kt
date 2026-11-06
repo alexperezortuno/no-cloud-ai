@@ -4,11 +4,15 @@ import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.HTMLEditorKitBuilder
@@ -17,6 +21,11 @@ import com.intellij.util.ui.UIUtil
 import dev.nocloud.ai.core.ChatMessage
 import dev.nocloud.ai.core.ToolCall
 import dev.nocloud.ai.util.Notifications
+import java.awt.BorderLayout
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import javax.swing.DefaultListModel
+import javax.swing.JPanel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -374,14 +383,74 @@ class ChatSurface(
     }
 
     private fun showAttachMenu() {
-        val group = DefaultActionGroup()
-        group.add(com.intellij.ide.actions.OpenFileAction())
-        val toolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
-            .createActionToolbar("attachMenu", group, true)
-        toolbar.setTargetComponent(attachButton)
-        val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
-            .createActionGroupPopup("", group, com.intellij.openapi.actionSystem.DataContext.EMPTY_CONTEXT, com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true)
+        val openFiles = FileEditorManager.getInstance(project).openFiles
+        if (openFiles.isEmpty()) {
+            Notifications.info(project, "No files currently open in the editor")
+            return
+        }
+
+        val listModel = DefaultListModel<VirtualFile>()
+        openFiles.forEach { listModel.addElement(it) }
+
+        val list = JBList(listModel).apply {
+            selectionMode = javax.swing.ListSelectionModel.SINGLE_SELECTION
+            visibleRowCount = 12
+        }
+
+        list.addMouseListener(
+            object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    if (e.clickCount == 1) {
+                        val selected = list.selectedValue ?: return
+                        insertFileMention(selected)
+                        hidePopup()
+                    }
+                }
+            },
+        )
+
+        val panel = JPanel(BorderLayout()).apply {
+            border = JBUI.Borders.customLine(JBColor.border())
+            add(com.intellij.ui.components.JBScrollPane(list), BorderLayout.CENTER)
+        }
+
+        val popup = JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(panel, list)
+            .setRequestFocus(false)
+            .setCancelOnClickOutside(true)
+            .setResizable(false)
+            .createPopup()
+
         popup.showUnderneathOf(attachButton)
+        attachButton.putClientProperty("attachPopup", popup)
+    }
+
+    private var attachPopup: com.intellij.openapi.ui.popup.JBPopup? = null
+
+    private fun hidePopup() {
+        attachPopup?.cancel()
+        attachPopup = null
+    }
+
+    private fun insertFileMention(file: VirtualFile) {
+        val relativePath = getRelativePath(file)
+        val mention = "@$relativePath "
+        val text = inputArea.text
+        val caret = inputArea.caretPosition.coerceAtLeast(0)
+        val updated = text.substring(0, caret) + mention + text.substring(caret)
+        inputArea.text = updated
+        inputArea.caretPosition = caret + mention.length
+        inputArea.requestFocus()
+    }
+
+    private fun getRelativePath(file: VirtualFile): String {
+        val basePath = project.basePath ?: return file.name
+        val filePath = file.path
+        return if (filePath.startsWith(basePath)) {
+            filePath.substring(basePath.length + 1)
+        } else {
+            file.name
+        }
     }
 
     /** Renders the assistant side of the conversation with markdown support. */
